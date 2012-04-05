@@ -29,10 +29,9 @@ def SU2SLG.render
 	p 'cfg file path'+ @cfg_file_path
 	
 	#TODO: export ply
-	mc=SU2SLGMeshCollector.new('slg','fale',false)
+	mc=SU2SLGMeshCollector.new(@model_name,@os_separator,false)
 	mc.collect_faces(Sketchup.active_model.entities, Geom::Transformation.new)
-	@materials=mc.materials
-	@fm_materials=mc.fm_materials
+	@materials=mc.materials.merge(mc.fm_materials)
 	@count_faces=mc.count_faces
 	@current_mat_step = 1
 	
@@ -288,11 +287,11 @@ def SU2SLG.write_scene_file
 	lookat=SU2SLG.export_camera(view)
 	scene_file=File.new(@export_file_path,"w")
 	scene_file <<  "scene.camera.lookat = #{lookat}\n"
-
-    put_s @materials  
-	
+    
+    p "MATERIALS: #{@materials.length}" 
 	@materials.each{|mat,value|
-		if (value!=nil and value!=[])
+		p 'X'
+        if (value!=nil and value!=[])
 			SU2SLG.export_face(mat,false)
 			ply_path="scenes/tmpscene/" + mat.display_name+".ply"
 			if mat.display_name.scan("light").size>0 
@@ -307,20 +306,6 @@ def SU2SLG.write_scene_file
 	@materials={}
 	
 	scene_file.close
-
-	bat_file=File.dirname(@export_file_path) + @os_separator + 'start.bat'
-	bat_file=File.new(bat_file,"w")
-	bat_file << "@echo off\n"
-	bat_file << "CD ..\n"
-	bat_file << "CD ..\n"
-	#bat_file << @slg_path<< " \"" << @cfg_file_path << "\"\n"
-	bat_file << "SLG.exe"<< " \"" << @cfg_file_path << "\"\n"
-	bat_file << "pause"
-	bat_file.close
-	# @echo off
-	# SLG.exe scenes\cat\render-fast.cfg
-	# pause
-	
 
 end
 
