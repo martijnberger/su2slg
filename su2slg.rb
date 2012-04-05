@@ -29,13 +29,12 @@ def SU2SLG.render
 	p 'cfg file path'+ @cfg_file_path
 	
 	#TODO: export ply
-	mc=SU2SLGMeshCollector.new
+	mc=SU2SLGMeshCollector.new('slg','fale',false)
 	mc.collect_faces(Sketchup.active_model.entities, Geom::Transformation.new)
 	@materials=mc.materials
 	@fm_materials=mc.fm_materials
 	@count_faces=mc.count_faces
 	@current_mat_step = 1
-	#@materials.inspect
 	
 	SU2SLG.write_scene_file
 	SU2SLG.write_render_cfg
@@ -289,6 +288,8 @@ def SU2SLG.write_scene_file
 	lookat=SU2SLG.export_camera(view)
 	scene_file=File.new(@export_file_path,"w")
 	scene_file <<  "scene.camera.lookat = #{lookat}\n"
+
+    put_s @materials  
 	
 	@materials.each{|mat,value|
 		if (value!=nil and value!=[])

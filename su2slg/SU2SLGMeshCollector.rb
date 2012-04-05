@@ -1,15 +1,62 @@
 class SU2SLGMeshCollector
-FRONTF = "su2slg_front_face"
+FRONTF = "SU2SLG Front Face"
 
-attr_reader :count_faces, :materials, :fm_materials
+attr_reader :count_faces, :materials, :fm_materials, :model_textures, :texturewriter, :deferred_instances
 
-def initialize
+def initialize(model_name,os_separator,instances)
+@model_name=model_name
+@os_separator=os_separator
 @parent_mat=[]
 @fm_comp=[]
 @materials = {}
 @fm_materials = {}
 @count_faces = 0
+@model_textures={}
+@texturewriter=Sketchup.create_texture_writer
+@textures_prefix = "TX_"
+@intance_counter_cache = Hash.new
+@deduplicate = instances
+@deferred_instances = Hash.new
 end
+
+#####################################################################
+## method returns true iff graph contains no further instances.
+## These can safely be instanciated
+#####################################################################
+def instance_is_leaf(object)
+  if !( object == Sketchup::ComponentInstance || object == Sketchup::Group )
+    return true
+  end
+  object.definition.entities.each { | child |
+    if child.class == Sketchup::ComponentInstance
+      #UI.messagebox("Definition: #{object.definition.name} containts instances")
+      return false
+    end
+    if child.class == Sketchup::Group 
+      child.entities.each { | grandchild |
+        if ! instance_is_leaf(grandchild)
+          return false
+          #UI.messagebox("Group failed on ")
+        end
+      }
+    end
+  }
+  #UI.messagebox("Component: #{object.definition.name} is a leaf node")
+  return true
+end  
+
+#####################################################################
+
+#####################################################################
+def instances_copies(object)
+  if ! @intance_counter_cache.key?(object.definition.name)
+     @intance_counter_cache[object.definition.name] = object.definition.instances.length
+  end
+  return @intance_counter_cache[object.definition.name]
+end  
+
+
+
 #####################################################################
 ###### - collect entities to an array -						 		######
 #####################################################################
@@ -36,8 +83,17 @@ def collect_faces(object, trans)
 			get_inside(e,trans,false) #e,trans,false - not FM component
 		end
 		if (e.class == Sketchup::ComponentInstance and e.layer.visible? and e.visible?)
-			get_inside(e,trans,e.definition.behavior.always_face_camera?) # e,trans, fm_component?
-		end
+        # IFF advanced behavior is off do old behaviou
+        # else only if instance has only 1 copy and instance does not contain instances do old behaviour
+        if ( @deduplicate == false || ( instances_copies(e) == 1 ||  ( !instance_is_leaf(e) ) ) )
+          get_inside(e,trans,e.definition.behavior.always_face_camera?) # e,trans, fm_component?
+        else # ELSE store instance transformation in hash,array for wrting out later
+          name = e.definition.name
+          newArray = @deferred_instances.fetch(name, Array.new).push(trans * e.transformation)
+          @deferred_instances.store(name,newArray)
+        end
+      		
+    end
 		if (e.class == Sketchup::Face and e.layer.visible? and e.visible?)
 			face_properties=find_face_material(e)
 			mat=face_properties[0]
@@ -76,11 +132,11 @@ def find_face_material(e)
 		end
 	end
 
-	# if (mat.respond_to?(:texture) and mat.texture !=nil)
-		# ret=SU2KT.store_textured_entities(e,mat,mat_dir)
-		# mat=ret[0]
-		# uvHelp=ret[1]
-	# end
+	if (mat.respond_to?(:texture) and mat.texture !=nil)
+		ret=store_textured_entities(e,mat,mat_dir)
+		 mat=ret[0]
+		uvHelp=ret[1]
+	end
 
 	return [mat,uvHelp,mat_dir]
 end
@@ -94,7 +150,7 @@ def get_inside(e,trans,face_me)
 	if e.material != nil
 		mat = e.material
 		@parent_mat.push(e.material)
-		#SU2KT.store_textured_entities(e,mat,true) if (mat.respond_to?(:texture) and mat.texture!=nil)
+		store_textured_entities(e,mat,true) if (mat.respond_to?(:texture) and mat.texture!=nil)
 	else
 		@parent_mat.push(@parent_mat.last)
 	end
@@ -103,5 +159,116 @@ def get_inside(e,trans,face_me)
 	@fm_comp.pop
 end
 
+def store_textured_entities(e,mat,mat_dir)
+
+	verb=false
+
+	tw=@texturewriter
+
+	puts "MATERIAL: " + mat.display_name if verb==true
+	uvHelp=nil
+	number=0
+	mat_name=mat.display_name.delete"<>[]" #TODO rename material name
+
+	if (e.class==Sketchup::Group or e.class==Sketchup::ComponentInstance) and mat.respond_to?(:texture) and mat.texture!=nil
+			txcount=tw.count
+			handle=tw.load e
+			tname=get_texture_name(mat_name,mat)
+			@model_textures[mat_name]=[0,e,mat_dir,handle,tname,mat] if (txcount!=tw.count and @model_textures[mat_name]==nil)
+			puts "GROUP #{mat_name} H:#{handle}\n#{@model_textures[mat_name]}" if verb==true
+	end
+
+	if e.class==Sketchup::Face
+
+		if  @exp_distorted==false
+			handle = tw.load(e,mat_dir)
+			tname=get_texture_name(mat_name,mat)
+			@model_textures[mat_name]=[0,e,mat_dir,handle,tname,mat] if @model_textures[mat_name]==nil
+			return [mat_name,uvHelp,mat_dir]
+		else
+
+			distorted=texture_distorted?(e,mat,mat_dir)
+
+			txcount=tw.count
+			handle = tw.load(e,mat_dir)
+			tname=get_texture_name(mat_name,mat)
+
+			if txcount!=tw.count #if new texture added to tw
+
+				if @model_textures[mat_name]==nil
+					if distorted==true
+						uvHelp=get_UVHelp(e,mat_dir)
+						puts "FIRST DISTORTED FACE #{mat_name} #{handle} #{e}" if verb==true
+					else
+						unHelp=nil
+						puts "FIRST FACE #{mat_name} #{handle} #{e}" if verb==true
+					end
+					@model_textures[mat_name]=[0,e,mat_dir,handle,tname,mat]
+				else
+					ret=add_new_texture(mat_name,e,mat,handle,mat_dir)
+					mat_name=ret[0]
+					uvHelp=ret[1]
+					puts "DISTORTED FACE #{mat_name} #{handle} #{e}" if verb==true
+				end
+			else
+				@model_textures.each{|key, value|
+					if handle==value[3]
+						mat_name=key
+						uvHelp=get_UVHelp(e,mat_dir) if distorted==true
+						puts "OLD MAT FACE #{key} #{handle} #{e} #{uvHelp}" if verb==true
+					end}
+			end
+		end
+	end
+	puts "FINAL: #{[mat_name,uvHelp,mat_dir].to_s}" if verb==true
+	return [mat_name,uvHelp,mat_dir]
 end
 
+def add_new_texture(mat_name,e,mat,handle,mat_dir)
+	state=@model_textures[mat_name]
+	number=state[0]=state[0]+1
+	mat_name=mat_name+number.to_s
+	tname=get_texture_name(mat_name,mat)
+	uvHelp=get_UVHelp(e,mat_dir)
+	@model_textures[mat_name]=[number,e,mat_dir,handle,tname,mat]
+return [mat_name,uvHelp]
+end
+
+def get_texture_name(name,mat)
+	ext=mat.texture.filename
+	p 'ext '+ext
+	ext=ext[(ext.length-4)..ext.length]
+	ext=".png" if (ext.upcase ==".BMP" or ext.upcase ==".GIF" or ext.upcase ==".PNG") #Texture writer converts BMP,GIF to PNG
+	ext=".tif" if ext.upcase=="TIFF"
+	ext=".jpg" if ext.upcase[0]!=46 # 46 = dot
+	s=name+ext
+	#s=@textures_prefix+@model_name+@os_separator+s
+	s=@textures_prefix+@model_name+"/"+s
+	p "texture name "+s
+	return s
+end
+
+def texture_distorted?(e,mat,mat_dir)
+
+	distorted=false
+	temp_tw=Sketchup.create_texture_writer
+	model = Sketchup.active_model
+	entities = model.active_entities
+	model.start_operation "Group" #For Undo
+	group=entities.add_group
+	group.material = mat
+	g_handle=temp_tw.load(group)
+	temp_handle=temp_tw.load(e,mat_dir)
+	entities.erase_entities group
+	Sketchup.undo
+	distorted=true if temp_handle!=g_handle
+	temp_tw=nil
+	return distorted
+
+end
+
+def get_UVHelp(e,mat_dir)
+	uvHelp = e.get_UVHelper(mat_dir, !mat_dir, @texturewriter)
+end
+
+end
